@@ -70,10 +70,18 @@ Key Security Features:
 
 ## Installation
 
-### Client (Browser)
+### Client Development & Browser
 
-**Create a new account:**
+**Development commands:**
+```bash
+cd ./Projects/chap/chap-client
+npm install
+npm run dev      # Start dev server (vite)
+npm run build     # Build for production
+npm run preview  # Preview built client locally
+```
 
+**Browser usage:**
 1. Open [chap-client](file:///home/joshuafc/Projects/chap/chap-client/index.html) in browser
 2. Click "Create New Account"
 3. Follow the prompts to generate your 12-word mnemonic recovery phrase
