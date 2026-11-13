@@ -12,53 +12,53 @@ A peer-to-peer WebSocket chat application that stores identity and message data 
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  CLIENT                              │                         │
-│  ┌──────────────────────────────────┐                        │
-│  │ Local Identity (Bip39 + Ed25519)  │                        │
-│  │ - Generate new account locally   │                        │
-│  │ - Import from mnemonic           │                        │
-│  └──────────┬────────────────────────┘                        │
-│             │ encrypts data via AES-GCM                         │
-│  ┌─────────▼───────────────────────┐                          │
-│  │ Local CRDT (Yjs + IndexedDB)     │                          │
-│  │ - Profile state                  │                          │
-│  │ - Message history                │                          │
-│  │ - Encrypted snapshots           │                          │
-│  └──────────┬──────────────────────┘                          │
-│             │ publishes encrypted backup                        │
-│  ┌─────────▼───────────────────────┐                          │
-│  │   WebSocket Client              │                          │
-│  │ - Auth: Sign challenge locally  │                          │
-│  │ - Join/leave voice calls         │                          │
-│  │ - P2P DM sessions               │                          │
-│  └─────────────────────────────────┘                          │
-└──────────────┬────────────────────────────────────────────────┘
+│  CLIENT                                                     │
+│  ┌──────────────────────────────────┐                       │
+│  │ Local Identity (Bip39 + Ed25519) │                       │
+│  │ - Generate new account locally   │                       │
+│  │ - Import from mnemonic           │                       │
+│  └──────────┬───────────────────────┘                       │
+│             │ encrypts data via AES-GCM                     │
+│  ┌─────────▼───────────────────────┐                        │
+│  │ Local CRDT (Yjs + IndexedDB)    │                        │
+│  │ - Profile state                 │                        │
+│  │ - Message history               │                        │
+│  │ - Encrypted snapshots           │                        │
+│  └──────────┬──────────────────────┘                        │
+│             │ publishes encrypted backup                    │
+│  ┌─────────▼───────────────────────┐                        │
+│  │   WebSocket Client              │                        │
+│  │ - Auth: Sign challenge locally  │                        │
+│  │ - Join/leave voice calls        │                        │
+│  │ - P2P DM sessions               │                        │
+│  └─────────────────────────────────┘                        │
+└──────────────┬──────────────────────────────────────────────┘
                │
                ↓ encrypted snapshots to server (if enabled)
-┌──────────────▼────────────────────────────────────────────────┐
+┌──────────────▼─────────────────────────────────────────────────┐
 │              SERVER (WebSocket Server - Node.js)               │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │                   Admin Console (terminal)                  │  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │                   Admin Console (terminal)               │  │
 │  │   Commands: op <publicKey> | deop <publicKey> | snapshots│  │
-│  └─────────────────────────────────────────────────────────┘  │
-│                                                                  │
-│  WebSocket Protocol:                                             │
-│  - AUTH_CHALLENGE: Server sends 32-byte random hex              │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                │
+│  WebSocket Protocol:                                           │
+│  - AUTH_CHALLENGE: Server sends 32-byte random hex             │
 │  - AUTH_RESPONSE: Client signs challenge, returns public key   │
-│  - PROFILE_UPDATE: Client broadcasts profile changes             │
-│  - CHAT_MESSAGE: Send messages to server                        │
+│  - PROFILE_UPDATE: Client broadcasts profile changes           │
+│  - CHAT_MESSAGE: Send messages to server                       │
 │  - DIRECT_MESSAGE: Broadcast to peer via P2P tunnel            │
-│  - VOICE_JOIN/SIGNAL: Voice call coordination                    │
-│  - SAVE_SNAPSHOT: Upload encrypted backup to server             │
-│                                                                  │
-│  Local Storage (JSON):                                           │
-│  - config.json: Server name, channels, admin whitelist        │
+│  - VOICE_JOIN/SIGNAL: Voice call coordination                  │
+│  - SAVE_SNAPSHOT: Upload encrypted backup to serve             │
+│                                                                │
+│  Local Storage (JSON):                                         │
+│  - config.json: Server name, channels, admin whitelist         │
 │  - messages.json: Chat message history                         │
-│  - dms.json: Direct messages                                  │
+│  - dms.json: Direct messages                                   │
 │  - profiles.json: User profiles per public key                 │
-│  - stats.json: Voice call stats, streaks                        │
-│  - snapshots.json: Encrypted client backups                   │
-└───────────────────────────────────────────────────────────────┘
+│  - stats.json: Voice call stats, streaks                       │
+│  - snapshots.json: Encrypted client backups                    │
+└────────────────────────────────────────────────────────────────┘
 
 Key Security Features:
 ├── Identity Keys: Bip39 mnemonic → Ed25519 public/private key pair stored locally
@@ -249,14 +249,12 @@ DATA_DIR=/app/data              # Local data storage directory
 
 ## License
 
-[MIT](LICENSE) (if LICENSE file exists)
+none Lol!
 
 ## Support
 
-For issues, use the community servers or check:
-- Discord/Community forum
-- Issue tracker (if available)
-
+For issues, use the community
+Alex!
 ---
 
 *Built for decentralized communication where your identity lives on your device.*
