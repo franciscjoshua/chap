@@ -78,7 +78,7 @@ Key Security Features:
 
 **Development commands:**
 ```bash
-cd ./Projects/chap/chap-client
+cd ./chap/chap-client
 npm install            # Install dependencies
 npm run dev            # Start dev server (vite)
 npm run build          # Build for production
