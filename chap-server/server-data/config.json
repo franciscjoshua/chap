@@ -1,0 +1,14 @@
+{
+  "serverName": "Josh's Minecraft-Style Server",
+  "channels": [
+    "general",
+    "test"
+  ],
+  "allowSnapshots": true,
+  "whitelistEnabled": false,
+  "whitelist": [],
+  "blacklist": [],
+  "admins": [
+    "4c463e010a96cf63c8008072858389fef70160aefc0434398e37ea29f0573c8d"
+  ]
+}

@@ -1,0 +1,882 @@
+// src/App.tsx
+import { useEffect, useRef, useState } from 'react';
+import { generateNewIdentity, restoreIdentityFromMnemonic, signChallenge, type UserIdentity } from './identity';
+import { connectAccountSync, disconnectAccountSync, friendsArray, profileMap, serversArray } from './profileStore';
+import { resizeImageToDataUrl } from './avatarHelper';
+import { P2PDMSession, type DmMessage, type PeerProfile } from './p2pDm';
+import { VoiceManager } from './voiceManager';
+
+interface ServerUser {
+  publicKey: string;
+  username: string;
+  bio: string;
+  avatar?: string;
+}
+
+interface ChatMessage {
+  id: string;
+  channel?: string;
+  senderKey: string;
+  senderName: string;
+  senderAvatar?: string;
+  text: string;
+  timestamp: number;
+}
+
+export default function App() {
+  const [identity, setIdentity] = useState<UserIdentity | null>(null);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [seedInput, setSeedInput] = useState('');
+  const [copiedId, setCopiedId] = useState(false);
+  
+  // Local CRDT Profile State
+  const [username, setUsername] = useState('');
+  const [bio, setBio] = useState('');
+  const [avatar, setAvatar] = useState('');
+  const [servers, setServers] = useState<string[]>([]);
+  const [friends, setFriends] = useState<string[]>([]);
+  const [newServerUrl, setNewServerUrl] = useState('ws://localhost:8080');
+  const [newFriendKey, setNewFriendKey] = useState('');
+
+  // Mode: 'server' vs 'dm'
+  const [viewMode, setViewMode] = useState<'server' | 'dm'>('server');
+
+  // Active Community Server State
+  const [activeServerUrl, setActiveServerUrl] = useState<string | null>(null);
+  const [connStatus, setConnStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected');
+  const [connError, setConnError] = useState('');
+  const [serverName, setServerName] = useState('');
+  const [channels, setChannels] = useState<string[]>(['general']);
+  const [activeChannel, setActiveChannel] = useState('general');
+  const [serverUsers, setServerUsers] = useState<ServerUser[]>([]);
+  const [serverProfiles, setServerProfiles] = useState<Record<string, PeerProfile>>({});
+  const [voiceUsers, setVoiceUsers] = useState<string[]>([]);
+  
+  // Voice Controls State
+  const [inVoice, setInVoice] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isDeafened, setIsDeafened] = useState(false);
+
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const wsRef = useRef<WebSocket | null>(null);
+  const voiceRef = useRef<VoiceManager | null>(null);
+  const chatBottomRef = useRef<HTMLDivElement | null>(null);
+
+  // Active P2P DM State
+  const [activeFriendKey, setActiveFriendKey] = useState<string | null>(null);
+  const [dmMessages, setDmMessages] = useState<DmMessage[]>([]);
+  const [dmProfiles, setDmProfiles] = useState<Record<string, PeerProfile>>({});
+  const dmSessionRef = useRef<P2PDMSession | null>(null);
+
+  const activateSession = (id: UserIdentity) => {
+    connectAccountSync(id.publicKeyHex, id.mnemonic);
+    setIdentity(id);
+  };
+
+  useEffect(() => {
+    const savedSeed = localStorage.getItem('local_seed_phrase');
+    if (savedSeed) {
+      restoreIdentityFromMnemonic(savedSeed).then(activateSession);
+    }
+    return () => disconnectAccountSync();
+  }, []);
+
+  // Auto-scroll chat to bottom whenever messages arrive
+  useEffect(() => {
+    chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, dmMessages, activeChannel, viewMode]);
+
+  useEffect(() => {
+    if (!identity) return;
+
+    const updateUI = () => {
+      const currentName = profileMap.get('username') || 'Anonymous';
+      const currentBio = profileMap.get('bio') || '';
+      const currentAvatar = profileMap.get('avatar') || '';
+      setUsername(currentName);
+      setBio(currentBio);
+      setAvatar(currentAvatar);
+      setServers(serversArray.toArray());
+      setFriends(friendsArray.toArray());
+
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
+          type: 'PROFILE_UPDATE',
+          username: currentName,
+          bio: currentBio,
+          avatar: currentAvatar
+        }));
+      }
+
+      if (dmSessionRef.current) {
+        dmSessionRef.current.publishMyProfile(identity.publicKeyHex, {
+          username: currentName,
+          bio: currentBio,
+          avatar: currentAvatar
+        });
+      }
+    };
+
+    profileMap.observe(updateUI);
+    serversArray.observe(updateUI);
+    friendsArray.observe(updateUI);
+    updateUI();
+
+    return () => {
+      profileMap.unobserve(updateUI);
+      serversArray.unobserve(updateUI);
+      friendsArray.unobserve(updateUI);
+    };
+  }, [identity]);
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard?.writeText(text).catch(() => {});
+    setCopiedId(true);
+    setTimeout(() => setCopiedId(false), 1800);
+  };
+
+  const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const compressedDataUrl = await resizeImageToDataUrl(file, 96);
+    profileMap.set('avatar', compressedDataUrl);
+  };
+
+  // Send an image directly into chat!
+  const handleChatImageUpload = async (file: File) => {
+    const compressedImg = await resizeImageToDataUrl(file, 360);
+    if (viewMode === 'server' && wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'CHAT_MESSAGE',
+        channel: activeChannel,
+        text: compressedImg
+      }));
+    } else if (viewMode === 'dm' && dmSessionRef.current && identity) {
+      dmSessionRef.current.sendMessage(identity.publicKeyHex, compressedImg);
+    }
+  };
+
+  const removeServer = (idx: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    serversArray.delete(idx, 1);
+  };
+
+  const removeFriend = (idx: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    friendsArray.delete(idx, 1);
+  };
+
+  const connectToServer = (url: string) => {
+    if (!identity) return;
+    leaveVoice();
+    if (wsRef.current) {
+      wsRef.current.onclose = null;
+      wsRef.current.close();
+    }
+
+    setViewMode('server');
+    setActiveServerUrl(url);
+    setConnStatus('connecting');
+    setConnError('');
+    setServerName(url);
+    setMessages([]);
+    setServerUsers([]);
+
+    const ws = new WebSocket(url);
+    wsRef.current = ws;
+
+    ws.onmessage = async (event) => {
+      try {
+        const data = JSON.parse(event.data);
+
+        if (data.type === 'AUTH_CHALLENGE') {
+          const signature = await signChallenge(data.challenge, identity.privateKey);
+          ws.send(JSON.stringify({
+            type: 'AUTH_RESPONSE',
+            publicKey: identity.publicKeyHex,
+            signature,
+            username: profileMap.get('username') || 'Anonymous',
+            bio: profileMap.get('bio') || '',
+            avatar: profileMap.get('avatar') || ''
+          }));
+        } else if (data.type === 'INIT_STATE') {
+          setConnStatus('connected');
+          setServerName(data.serverName);
+          if (data.channels?.length) {
+            setChannels(data.channels);
+            setActiveChannel(data.channels[0]);
+          }
+          setMessages(data.messages || []);
+          if (data.profiles) setServerProfiles(data.profiles);
+        } else if (data.type === 'USER_LIST') {
+          setServerUsers(data.users || []);
+          if (data.profiles) setServerProfiles(data.profiles);
+          if (data.voiceUsers) setVoiceUsers(data.voiceUsers);
+        } else if (data.type === 'NEW_MESSAGE') {
+          setMessages(prev => [...prev, data.message]);
+        } else if (data.type === 'VOICE_PEER_JOINED') {
+          voiceRef.current?.initiateCallToPeer(data.peerKey);
+        } else if (data.type === 'VOICE_SIGNAL') {
+          voiceRef.current?.handleIncomingSignal(data.fromKey, data.signal);
+        } else if (data.type === 'ERROR') {
+          setConnStatus('error');
+          setConnError(data.message);
+          ws.close();
+        }
+      } catch (err: any) {
+        setConnStatus('error');
+        setConnError(err.message || 'Client error during handshake');
+      }
+    };
+
+    ws.onerror = () => {
+      setConnStatus('error');
+      setConnError(`Could not reach ${url}.`);
+    };
+
+    ws.onclose = () => {
+      if (wsRef.current === ws) {
+        setInVoice(false);
+        setConnStatus(prev => (prev === 'error' ? 'error' : 'disconnected'));
+      }
+    };
+  };
+
+  const toggleVoice = async () => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    if (inVoice) {
+      leaveVoice();
+    } else {
+      try {
+        const vm = new VoiceManager(wsRef.current);
+        await vm.startLocalMic();
+        voiceRef.current = vm;
+        setInVoice(true);
+        setIsMuted(false);
+        setIsDeafened(false);
+        wsRef.current.send(JSON.stringify({ type: 'VOICE_JOIN' }));
+      } catch (err) {
+        alert('Could not access microphone for voice chat!');
+      }
+    }
+  };
+
+  const toggleMute = () => {
+    if (!voiceRef.current) return;
+    const next = !isMuted;
+    voiceRef.current.setMuted(next);
+    setIsMuted(next);
+  };
+
+  const toggleDeafen = () => {
+    if (!voiceRef.current) return;
+    const next = !isDeafened;
+    voiceRef.current.setDeafened(next);
+    setIsDeafened(next);
+    if (next) setIsMuted(true);
+  };
+
+  const leaveVoice = () => {
+    if (voiceRef.current) {
+      voiceRef.current.stop();
+      voiceRef.current = null;
+    }
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'VOICE_LEAVE' }));
+    }
+    setInVoice(false);
+    setIsMuted(false);
+    setIsDeafened(false);
+  };
+
+  const openDirectMessage = (friendKey: string) => {
+    if (!identity) return;
+    const cleanKey = friendKey.trim();
+    if (!cleanKey || cleanKey === identity.publicKeyHex) return;
+
+    if (!friendsArray.toArray().includes(cleanKey)) {
+      friendsArray.push([cleanKey]);
+    }
+
+    if (dmSessionRef.current) {
+      dmSessionRef.current.destroy();
+    }
+
+    setViewMode('dm');
+    setActiveFriendKey(cleanKey);
+
+    const session = new P2PDMSession(identity.publicKeyHex, cleanKey, () => {
+      setDmMessages(session.messagesArray.toArray());
+      setDmProfiles(session.profilesMap.toJSON() as Record<string, PeerProfile>);
+    });
+
+    dmSessionRef.current = session;
+
+    session.publishMyProfile(identity.publicKeyHex, {
+      username: profileMap.get('username') || 'Anonymous',
+      bio: profileMap.get('bio') || '',
+      avatar: profileMap.get('avatar') || ''
+    });
+
+    setDmMessages(session.messagesArray.toArray());
+    setDmProfiles(session.profilesMap.toJSON() as Record<string, PeerProfile>);
+  };
+
+  const sendChatMessage = () => {
+    if (!chatInput.trim()) return;
+
+    if (viewMode === 'server' && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'CHAT_MESSAGE',
+        channel: activeChannel,
+        text: chatInput
+      }));
+    } else if (viewMode === 'dm' && dmSessionRef.current && identity) {
+      dmSessionRef.current.sendMessage(identity.publicKeyHex, chatInput);
+    }
+    setChatInput('');
+  };
+
+  // Render message content (Supports embedded images & clickable links!)
+  const renderMessageContent = (text: string) => {
+    if (text.startsWith('data:image/')) {
+      return <img src={text} alt="attachment" style={{ maxWidth: 260, borderRadius: 8, marginTop: 6, display: 'block' }} />;
+    }
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    const parts = text.split(urlRegex);
+    return (
+      <div style={{ marginTop: 4, wordBreak: 'break-word' }}>
+        {parts.map((part, i) => 
+          urlRegex.test(part) ? (
+            <a key={i} href={part} target="_blank" rel="noreferrer" style={{ color: '#64b5f6' }}>{part}</a>
+          ) : (
+            <span key={i}>{part}</span>
+          )
+        )}
+      </div>
+    );
+  };
+
+  const formatTime = (ts: number) => {
+    if (!ts) return '';
+    return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const handleCreateAccount = async () => {
+    const id = await generateNewIdentity();
+    localStorage.setItem('local_seed_phrase', id.mnemonic);
+    activateSession(id);
+    profileMap.set('username', 'Anonymous');
+  };
+
+  const handleImportAccount = async () => {
+    try {
+      const id = await restoreIdentityFromMnemonic(seedInput.trim());
+      localStorage.setItem('local_seed_phrase', id.mnemonic);
+      activateSession(id);
+      setSeedInput('');
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const handleLogout = () => {
+    leaveVoice();
+    if (wsRef.current) {
+      wsRef.current.onclose = null;
+      wsRef.current.close();
+    }
+    if (dmSessionRef.current) dmSessionRef.current.destroy();
+    disconnectAccountSync();
+    localStorage.removeItem('local_seed_phrase');
+    setIdentity(null);
+    setIsLoggingIn(false);
+  };
+
+  if (!identity) {
+    return (
+      <div style={{ padding: 32, fontFamily: 'sans-serif', maxWidth: 420, margin: '40px auto', textAlign: 'center' }}>
+        <h2>Welcome to Chap</h2>
+        {!isLoggingIn ? (
+          <div>
+            <p style={{ color: '#aaa', marginBottom: 24 }}>
+              Your account lives entirely on your devices. No central servers, no emails, no phone numbers.
+            </p>
+            <button onClick={handleCreateAccount} style={{ width: '100%', padding: '12px 16px', fontSize: 16, cursor: 'pointer', marginBottom: 16 }}>
+              Create New Account
+            </button>
+            <p style={{ fontSize: 14 }}>
+              Already have an account?{' '}
+              <button onClick={() => setIsLoggingIn(true)} style={{ background: 'none', border: 'none', color: '#646cff', cursor: 'pointer', textDecoration: 'underline', padding: 0 }}>
+                Log in here
+              </button>
+            </p>
+          </div>
+        ) : (
+          <div>
+            <p style={{ color: '#aaa', marginBottom: 16 }}>
+              Enter your 12-word recovery phrase to link this device to your account.
+            </p>
+            <textarea
+              rows={3}
+              value={seedInput}
+              onChange={e => setSeedInput(e.target.value)}
+              placeholder="unaware analyst push ignore..."
+              style={{ width: '100%', padding: 10, marginBottom: 12, boxSizing: 'border-box' }}
+            />
+            <button onClick={handleImportAccount} style={{ width: '100%', padding: '12px 16px', fontSize: 16, cursor: 'pointer', marginBottom: 16 }}>
+              Sync & Log In
+            </button>
+            <p style={{ fontSize: 14 }}>
+              Need a new account instead?{' '}
+              <button onClick={() => setIsLoggingIn(false)} style={{ background: 'none', border: 'none', color: '#646cff', cursor: 'pointer', textDecoration: 'underline', padding: 0 }}>
+                Create one
+              </button>
+            </p>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const channelMessages = messages.filter(m => (m.channel || 'general') === activeChannel);
+
+  return (
+    <div style={{ display: 'flex', height: '100vh', fontFamily: 'sans-serif', textAlign: 'left' }}>
+      
+      {/* LEFT SIDEBAR */}
+      <div style={{ width: 290, borderRight: '1px solid #333', padding: 16, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3 style={{ margin: 0 }}>My Account</h3>
+          <button onClick={handleLogout} style={{ padding: '4px 10px', fontSize: 12 }}>Log Out</button>
+        </div>
+
+        {/* Avatar & Full Selectable Public ID */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <label style={{ cursor: 'pointer', flexShrink: 0 }} title="Click to change avatar">
+            {avatar ? (
+              <img src={avatar} alt="avatar" style={{ width: 52, height: 52, borderRadius: '50%', objectFit: 'cover', border: '2px solid #646cff' }} />
+            ) : (
+              <div style={{ width: 52, height: 52, borderRadius: '50%', background: '#333', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: '#aaa', border: '1px dashed #666' }}>
+                + Photo
+              </div>
+            )}
+            <input type="file" accept="image/*" onChange={handleAvatarUpload} style={{ display: 'none' }} />
+          </label>
+          <div style={{ fontSize: 12, color: '#aaa', flex: 1, overflow: 'hidden' }}>
+            <div style={{ marginBottom: 4 }}><strong>Your Public ID:</strong></div>
+            <div style={{ display: 'flex', gap: 4 }}>
+              <input
+                readOnly
+                value={identity.publicKeyHex}
+                onFocus={e => e.target.select()}
+                style={{ width: '100%', fontSize: 11, padding: '4px 6px', background: '#1a1a1a', color: '#eee', border: '1px solid #444', borderRadius: 4 }}
+              />
+              <button
+                onClick={() => copyToClipboard(identity.publicKeyHex)}
+                style={{ padding: '4px 8px', fontSize: 11, cursor: 'pointer', whiteSpace: 'nowrap', background: copiedId ? '#43a047' : '#646cff', color: '#fff', border: 'none', borderRadius: 4 }}
+              >
+                {copiedId ? 'Copied!' : 'Copy'}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <details style={{ fontSize: 12 }}>
+          <summary style={{ cursor: 'pointer' }}>Show 12-Word Phrase</summary>
+          <code style={{ display: 'block', padding: 8, background: '#222', color: '#eee', borderRadius: 4, marginTop: 6 }}>
+            {identity.mnemonic}
+          </code>
+        </details>
+
+        <label style={{ fontSize: 12 }}>
+          <strong>Username:</strong>
+          <input 
+            value={username} 
+            onChange={e => profileMap.set('username', e.target.value)} 
+            style={{ width: '100%', marginTop: 4, padding: 6, boxSizing: 'border-box' }}
+          />
+        </label>
+
+        <label style={{ fontSize: 12 }}>
+          <strong>Bio:</strong>
+          <textarea 
+            rows={2}
+            value={bio} 
+            onChange={e => profileMap.set('bio', e.target.value)} 
+            style={{ width: '100%', marginTop: 4, padding: 6, boxSizing: 'border-box' }}
+          />
+        </label>
+
+        <hr style={{ width: '100%', opacity: 0.2 }} />
+
+        {/* SERVERS SECTION */}
+        <h4 style={{ margin: 0 }}>Community Servers</h4>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <input 
+            value={newServerUrl} 
+            onChange={e => setNewServerUrl(e.target.value)} 
+            placeholder="ws://localhost:8080" 
+            style={{ flex: 1, padding: 6, fontSize: 12 }}
+          />
+          <button onClick={() => {
+            if (newServerUrl.trim() && !serversArray.toArray().includes(newServerUrl.trim())) {
+              serversArray.push([newServerUrl.trim()]);
+            }
+          }}>
+            Add
+          </button>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {servers.map((url, idx) => {
+            const isSelected = viewMode === 'server' && activeServerUrl === url;
+            return (
+              <div 
+                key={idx} 
+                onClick={() => connectToServer(url)}
+                style={{ 
+                  padding: '8px 10px', 
+                  borderRadius: 6, 
+                  cursor: 'pointer',
+                  background: isSelected ? '#646cff' : '#2a2a2a',
+                  color: '#fff',
+                  fontSize: 13,
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center'
+                }}
+              >
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{url}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 11, opacity: 0.8 }}>
+                    {isSelected && connStatus === 'connected' ? 'Connected' : 'Join'}
+                  </span>
+                  <span 
+                    onClick={(e) => removeServer(idx, e)} 
+                    title="Remove server"
+                    style={{ fontSize: 14, opacity: 0.6, padding: '0 4px' }}
+                  >
+                    ×
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <hr style={{ width: '100%', opacity: 0.2 }} />
+
+        {/* P2P DIRECT MESSAGES SECTION */}
+        <h4 style={{ margin: 0 }}>P2P Friends (DMs)</h4>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <input 
+            value={newFriendKey} 
+            onChange={e => setNewFriendKey(e.target.value)} 
+            placeholder="Paste Friend's Full ID..." 
+            style={{ flex: 1, padding: 6, fontSize: 12 }}
+          />
+          <button onClick={() => {
+            if (newFriendKey.trim()) {
+              openDirectMessage(newFriendKey.trim());
+              setNewFriendKey('');
+            }
+          }}>
+            DM
+          </button>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {friends.map((fKey, idx) => {
+            const knownProfile = serverProfiles[fKey] || dmProfiles[fKey];
+            const isSelected = viewMode === 'dm' && activeFriendKey === fKey;
+            return (
+              <div
+                key={fKey}
+                onClick={() => openDirectMessage(fKey)}
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: 6,
+                  cursor: 'pointer',
+                  background: isSelected ? '#646cff' : '#2a2a2a',
+                  fontSize: 12,
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center'
+                }}
+              >
+                <span>{knownProfile?.username || `${fKey.slice(0, 12)}...`}</span>
+                <span 
+                  onClick={(e) => removeFriend(idx, e)}
+                  title="Remove friend"
+                  style={{ fontSize: 14, opacity: 0.6, padding: '0 4px' }}
+                >
+                  ×
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* MAIN AREA */}
+      <div style={{ flex: 1, display: 'flex' }}>
+        {viewMode === 'dm' && activeFriendKey ? (
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 20 }}>
+            <div style={{ borderBottom: '1px solid #333', paddingBottom: 10, marginBottom: 12 }}>
+              <h3 style={{ margin: 0 }}>
+                P2P DM with {dmProfiles[activeFriendKey]?.username || serverProfiles[activeFriendKey]?.username || `${activeFriendKey.slice(0, 12)}...`}
+              </h3>
+              <small style={{ color: '#4caf50' }}>● Direct Encrypted Peer-to-Peer Stream</small>
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {dmMessages.map(msg => {
+                const p = msg.senderKey === identity.publicKeyHex 
+                  ? { username, avatar } 
+                  : (dmProfiles[msg.senderKey] || serverProfiles[msg.senderKey]);
+
+                return (
+                  <div key={msg.id} style={{ display: 'flex', gap: 10, background: '#222', padding: '8px 12px', borderRadius: 6, alignItems: 'flex-start' }}>
+                    {p?.avatar ? (
+                      <img src={p.avatar} alt="" style={{ width: 34, height: 34, borderRadius: '50%', objectFit: 'cover' }} />
+                    ) : (
+                      <div style={{ width: 34, height: 34, borderRadius: '50%', background: '#444' }} />
+                    )}
+                    <div>
+                      <div style={{ fontSize: 12, color: '#4caf50', fontWeight: 'bold' }}>
+                        {p?.username || 'Peer'}{' '}
+                        <span style={{ color: '#666', fontWeight: 'normal', fontSize: 11 }}>
+                          {formatTime(msg.timestamp)}
+                        </span>
+                      </div>
+                      {renderMessageContent(msg.text)}
+                    </div>
+                  </div>
+                );
+              })}
+              <div ref={chatBottomRef} />
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              <label style={{ padding: '10px 12px', background: '#333', borderRadius: 6, cursor: 'pointer' }} title="Send Image">
+                📷
+                <input type="file" accept="image/*" onChange={e => e.target.files?.[0] && handleChatImageUpload(e.target.files[0])} style={{ display: 'none' }} />
+              </label>
+              <input
+                value={chatInput}
+                onChange={e => setChatInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && sendChatMessage()}
+                onPaste={e => {
+                  const file = e.clipboardData.files?.[0];
+                  if (file && file.type.startsWith('image/')) handleChatImageUpload(file);
+                }}
+                placeholder="Send P2P message or paste image..."
+                style={{ flex: 1, padding: 10, borderRadius: 6, border: '1px solid #444' }}
+              />
+              <button onClick={sendChatMessage} style={{ padding: '10px 18px' }}>Send</button>
+            </div>
+          </div>
+        ) : !activeServerUrl ? (
+          <div style={{ margin: 'auto', textAlign: 'center', color: '#888' }}>
+            <h3>Select a Server</h3>
+            <p>Click a community server on the left to join!</p>
+          </div>
+        ) : (
+          <>
+            {/* CHANNEL & VOICE SIDEBAR */}
+            <div style={{ width: 200, borderRight: '1px solid #333', padding: 16, background: '#1a1a1a', display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div>
+                <h4 style={{ margin: '0 0 4px 0', fontSize: 14 }}>{serverName}</h4>
+                <div style={{ fontSize: 11, marginBottom: 12, color: connStatus === 'connected' ? '#4caf50' : '#ff9800' }}>
+                  ● {connStatus.toUpperCase()}
+                </div>
+                {connError && (
+                  <div style={{ fontSize: 11, color: '#ff5252', marginBottom: 8 }}>
+                    {connError}
+                  </div>
+                )}
+                <div style={{ fontSize: 11, color: '#888', marginBottom: 6, textTransform: 'uppercase' }}>Text Channels</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {channels.map(ch => (
+                    <div
+                      key={ch}
+                      onClick={() => setActiveChannel(ch)}
+                      style={{
+                        padding: '6px 10px',
+                        borderRadius: 4,
+                        cursor: 'pointer',
+                        fontSize: 13,
+                        background: activeChannel === ch ? '#333' : 'transparent',
+                        color: activeChannel === ch ? '#fff' : '#888',
+                        fontWeight: activeChannel === ch ? 'bold' : 'normal'
+                      }}
+                    >
+                      # {ch}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* VOICE CHANNEL SECTION WITH MUTE & DEAFEN */}
+              <div>
+                <div style={{ fontSize: 11, color: '#888', marginBottom: 6, textTransform: 'uppercase' }}>Voice Channels</div>
+                <div style={{ background: '#242424', padding: 10, borderRadius: 6 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <span style={{ fontSize: 13, fontWeight: 'bold' }}>🔊 Voice Lounge</span>
+                  </div>
+                  <button 
+                    onClick={toggleVoice}
+                    style={{ 
+                      width: '100%', 
+                      padding: '6px', 
+                      fontSize: 12, 
+                      cursor: 'pointer',
+                      background: inVoice ? '#e53935' : '#43a047',
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: 4,
+                      marginBottom: 8
+                    }}
+                  >
+                    {inVoice ? 'Disconnect' : 'Join Voice'}
+                  </button>
+
+                  {inVoice && (
+                    <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+                      <button
+                        onClick={toggleMute}
+                        style={{ flex: 1, padding: '5px', fontSize: 11, cursor: 'pointer', background: isMuted ? '#e53935' : '#333', color: '#fff', border: 'none', borderRadius: 4 }}
+                      >
+                        {isMuted ? '🔇 Muted' : '🎤 Mute'}
+                      </button>
+                      <button
+                        onClick={toggleDeafen}
+                        style={{ flex: 1, padding: '5px', fontSize: 11, cursor: 'pointer', background: isDeafened ? '#e53935' : '#333', color: '#fff', border: 'none', borderRadius: 4 }}
+                      >
+                        {isDeafened ? '🙉 Deaf' : '🎧 Deafen'}
+                      </button>
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {voiceUsers.map(vKey => {
+                      const vp = serverProfiles[vKey];
+                      return (
+                        <div key={vKey} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                          {vp?.avatar ? (
+                            <img src={vp.avatar} alt="" style={{ width: 22, height: 22, borderRadius: '50%', border: '2px solid #4caf50', objectFit: 'cover' }} />
+                          ) : (
+                            <div style={{ width: 22, height: 22, borderRadius: '50%', background: '#4caf50' }} />
+                          )}
+                          <span>{vp?.username || vKey.slice(0, 8)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* CHAT MESSAGES COLUMN */}
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 20 }}>
+              <div style={{ borderBottom: '1px solid #333', paddingBottom: 10, marginBottom: 12 }}>
+                <h3 style={{ margin: 0 }}># {activeChannel}</h3>
+              </div>
+
+              <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {channelMessages.map(msg => {
+                  const liveProfile = serverProfiles[msg.senderKey];
+                  const displayAvatar = liveProfile?.avatar || msg.senderAvatar;
+                  const displayName = liveProfile?.username || msg.senderName;
+
+                  return (
+                    <div key={msg.id} style={{ display: 'flex', gap: 10, background: '#222', padding: '8px 12px', borderRadius: 6, alignItems: 'flex-start' }}>
+                      {displayAvatar ? (
+                        <img src={displayAvatar} alt="" style={{ width: 34, height: 34, borderRadius: '50%', objectFit: 'cover' }} />
+                      ) : (
+                        <div style={{ width: 34, height: 34, borderRadius: '50%', background: '#444' }} />
+                      )}
+                      <div>
+                        <div style={{ fontSize: 12, color: '#646cff', fontWeight: 'bold' }}>
+                          {displayName}{' '}
+                          <span style={{ color: '#666', fontWeight: 'normal', fontSize: 11 }}>
+                            ({msg.senderKey.slice(0, 6)}) • {formatTime(msg.timestamp)}
+                          </span>
+                        </div>
+                        {renderMessageContent(msg.text)}
+                      </div>
+                    </div>
+                  );
+                })}
+                <div ref={chatBottomRef} />
+              </div>
+
+              <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                <label style={{ padding: '10px 12px', background: '#333', borderRadius: 6, cursor: 'pointer' }} title="Upload Image">
+                  📷
+                  <input type="file" accept="image/*" onChange={e => e.target.files?.[0] && handleChatImageUpload(e.target.files[0])} style={{ display: 'none' }} />
+                </label>
+                <input
+                  value={chatInput}
+                  onChange={e => setChatInput(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && sendChatMessage()}
+                  onPaste={e => {
+                    const file = e.clipboardData.files?.[0];
+                    if (file && file.type.startsWith('image/')) handleChatImageUpload(file);
+                  }}
+                  placeholder={`Message #${activeChannel} (or paste an image)...`}
+                  style={{ flex: 1, padding: 10, borderRadius: 6, border: '1px solid #444' }}
+                />
+                <button onClick={sendChatMessage} style={{ padding: '10px 18px' }}>
+                  Send
+                </button>
+              </div>
+            </div>
+
+            {/* RIGHT SIDEBAR: Server Member List */}
+            <div style={{ width: 230, borderLeft: '1px solid #333', padding: 16, overflowY: 'auto' }}>
+              <h4 style={{ marginTop: 0 }}>Online Members ({serverUsers.length})</h4>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {serverUsers.map(u => (
+                  <div key={u.publicKey} style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: 8, background: '#222', borderRadius: 6 }}>
+                    <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                      {u.avatar ? (
+                        <img src={u.avatar} alt="" style={{ width: 36, height: 36, borderRadius: '50%', objectFit: 'cover' }} />
+                      ) : (
+                        <div style={{ width: 36, height: 36, borderRadius: '50%', background: '#444', flexShrink: 0 }} />
+                      )}
+                      <div style={{ overflow: 'hidden' }}>
+                        <div style={{ fontWeight: 'bold', fontSize: 13 }}>{u.username}</div>
+                        <div style={{ fontSize: 10, color: '#888' }}>{u.publicKey.slice(0, 10)}...</div>
+                        {u.bio && <div style={{ fontSize: 11, color: '#bbb', marginTop: 2, fontStyle: 'italic' }}>"{u.bio}"</div>}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      <button 
+                        onClick={() => copyToClipboard(u.publicKey)}
+                        style={{ flex: 1, padding: '4px', fontSize: 11, cursor: 'pointer', background: '#333', border: 'none', color: '#ccc', borderRadius: 4 }}
+                      >
+                        Copy ID
+                      </button>
+                      {u.publicKey !== identity.publicKeyHex && (
+                        <button 
+                          onClick={() => openDirectMessage(u.publicKey)}
+                          style={{ flex: 1, padding: '4px', fontSize: 11, cursor: 'pointer', background: '#646cff', border: 'none', color: '#fff', borderRadius: 4 }}
+                        >
+                          DM (P2P)
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+    </div>
+  );
+}

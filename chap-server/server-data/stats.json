@@ -1,0 +1,42 @@
+{
+  "largestVoiceCall": 2,
+  "longestVoiceCallSeconds": 22,
+  "streaks": {
+    "4c463e010a96cf63c8008072858389fef70160aefc0434398e37ea29f0573c8d": {
+      "count": 1,
+      "lastDate": "2026-11-11"
+    },
+    "a8eaa96c27dbf1ddbfaaaf46e8a91eaab5c92b4d9aa2fb5fe3a379c64a56f8e8": {
+      "count": 1,
+      "lastDate": "2026-11-11"
+    },
+    "be95816f27f9058765ab25a84bf4a0b88ebe4fdd1c930296db8273a9a8300d6b": {
+      "count": 1,
+      "lastDate": "2026-11-11"
+    }
+  },
+  "serverStreaks": {
+    "4c463e010a96cf63c8008072858389fef70160aefc0434398e37ea29f0573c8d": {
+      "count": 2,
+      "lastDate": "2026-11-12"
+    },
+    "a8eaa96c27dbf1ddbfaaaf46e8a91eaab5c92b4d9aa2fb5fe3a379c64a56f8e8": {
+      "count": 2,
+      "lastDate": "2026-11-12"
+    },
+    "c11fcac251bb35e985de42cd63985074f68c2a87c52d3a190f280c2e22df8395": {
+      "count": 1,
+      "lastDate": "2026-11-12"
+    },
+    "eb5a136c1ca62fc0d60b8b0729dc0d2df9dd9434f270d680b6baf64d0cb9cda4": {
+      "count": 1,
+      "lastDate": "2026-11-12"
+    }
+  },
+  "dmStreaks": {
+    "4c463e010a96cf63c8008072858389fef70160aefc0434398e37ea29f0573c8d-a8eaa96c27dbf1ddbfaaaf46e8a91eaab5c92b4d9aa2fb5fe3a379c64a56f8e8": {
+      "count": 1,
+      "lastDate": "2026-11-12"
+    }
+  }
+}

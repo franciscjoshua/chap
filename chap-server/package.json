@@ -1,0 +1,9 @@
+{
+  "name": "chap-server",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@noble/ed25519": "^3.0.0",
+    "ws": "^8.18.0"
+  }
+}
