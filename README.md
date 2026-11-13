@@ -72,14 +72,28 @@ Key Security Features:
 
 ### Client Development & Browser
 
+**Prerequisites:**
+- Node.js 18+ (check with: `node -v`)
+- npm installed
+
 **Development commands:**
 ```bash
 cd ./Projects/chap/chap-client
-npm install
-npm run dev      # Start dev server (vite)
-npm run build     # Build for production
-npm run preview  # Preview built client locally
+npm install            # Install dependencies
+npm run dev            # Start dev server (vite)
+npm run build          # Build for production
+npm run preview        # Preview built client locally
 ```
+
+**Dependencies:**
+| Package | Purpose |
+|---------|---------|
+| `@noble/ed25519` | Ed25519 crypto operations |
+| `@scure/bip39` | Bip39 mnemonic generation |
+| `react` / `react-dom` | UI framework |
+| `yjs` / `y-indexeddb` / `y-webrtc` | CRDT state sync & WebRTC |
+| `ws` | WebSocket client library |
+| Vite | Build tool & dev server |
 
 **Browser usage:**
 1. Open [chap-client](file:///home/joshuafc/Projects/chap/chap-client/index.html) in browser
@@ -100,6 +114,36 @@ npm install
 
 Or use Docker:
 ```bash
+docker-compose up -d
+```
+
+### Windows Version
+
+**Prerequisites:**
+- Node.js 18+ (check with: `node -v`)
+- npm installed
+- Windows Terminal or PowerShell
+
+**Development commands:**
+```powershell
+# In Command Prompt or PowerShell
+cd ..\chap-client
+npm install           # Install dependencies
+npm run dev           # Start dev server (vite)
+npm run build         # Build for production
+npm run preview       # Preview built client locally
+```
+
+**Server setup (Windows):**
+```powershell
+cd ..\chap-server
+npm install
+node server.mjs      # Run the server
+```
+
+**Docker on Windows:**
+```powershell
+cd ..\chap-server
 docker-compose up -d
 ```
 
